@@ -1,3 +1,7 @@
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
+# Author: CampusAmour
+
 import torch
 import torch.nn as nn
 from data_process import get_data

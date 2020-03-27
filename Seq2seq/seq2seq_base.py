@@ -1,3 +1,7 @@
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
+# Author: CampusAmour
+
 import torch
 import torch.nn as nn
 # from data_process import en_word_to_index, en_index_to_word, en_total_words, ch_word_to_index, ch_index_to_word, ch_total_words, \

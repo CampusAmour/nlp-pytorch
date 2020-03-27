@@ -1,3 +1,7 @@
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
+# Author: CampusAmour
+
 import jieba
 import nltk
 import numpy as np
