@@ -1,9 +1,14 @@
 # nlp-pytorch
 nlp models by pytorch1.3
 
-仅供个人练习，复现并运用nlp主流模型。
-持续更新～
+ubuntu 16.04
 
 require:
-python3.7+
-pytorch1.3+
+python 3.7+
+pytorch 1.3+
+transformers 2.6.0 (which is a pretrained BERT package by pytorch)
+
+Only for personal practice... reproducing and using the mainstream model of nlp.
+The datasets and the trained models have not been uploaded, If you need them please send email to campusamour@gmail.com, I will reply you as soon as possible. 
+
+Continually updating~
