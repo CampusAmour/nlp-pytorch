@@ -11,12 +11,12 @@ from transformers import BertTokenizer, BertModel, BertConfig
 MODEL_PATH = './bert-base-chinese'
 VOCAB_PATH = MODEL_PATH + '/bert-base-chinese-vocab.txt'
 BATCH_SIZE = 64
-EPOCHS = 30
+EPOCHS = 100
 FILE_PATH = './THUCNews/data/'
 LEARNING_RATE = 1e-4
 SAVE_MODEL_PATH = './bert_model/bert_model.pth'
 MAX_SEQ_LENGTH = 36
-DROPOUT = 0.2
+DROPOUT = 0.1
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 tokenizer = BertTokenizer.from_pretrained(VOCAB_PATH)
 
@@ -103,8 +103,8 @@ def evaluate(model, eval_data, eval_labels, criterion, batch_size):
 
             predict = predict.view(-1, predict.shape[-1])  # [batch_size, classes]
             loss = criterion(predict, eval_labels)
-            total_loss += loss.cpu().item()
-    return total_loss / batch_num
+            total_loss += (loss.cpu().item() * BATCH_SIZE)
+    return total_loss / (batch_num * BATCH_SIZE)
 
 
 def test(model, test_data, test_labels, batch_size):
@@ -115,20 +115,19 @@ def test(model, test_data, test_labels, batch_size):
     softmax = nn.Softmax(dim=1)
     with torch.no_grad():
         for i in range(batch_num):
-            eval_batch, eval_labels = next(batch)
+            test_batch, test_labels = next(batch)
 
-            predict = model(eval_batch)
+            predict = model(test_batch)
             predict = torch.argmax(softmax(predict), dim=1)
+
             acc_count += torch.sum(torch.Tensor([x == y for x, y in zip(predict, test_labels)])).long().cpu().item()
     return acc_count / (batch_num * BATCH_SIZE)
-
 
 
 def train():
     config = BertConfig()
     model = BertClassifyModel(config, len(classes), DROPOUT)
     model.to(device)
-    model.train()
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     start = time.time()
@@ -147,23 +146,26 @@ def train():
 
                 optimizer.zero_grad()
                 loss = criterion(outputs, labels_batch)
-                total_loss += loss.cpu().item()
+                total_loss += (loss.cpu().item() * BATCH_SIZE)
 
                 loss.backward()
                 optimizer.step()
 
             eval = evaluate(model, eval_data, eval_labels, criterion, BATCH_SIZE)
 
-            accuracy = test(model, test_data, test_labels, BATCH_SIZE)
+            # accuracy_train = test(model, train_data, train_labels, BATCH_SIZE)
+            accuracy_eval = test(model, eval_data, eval_labels, BATCH_SIZE)
+            accuracy_test = test(model, test_data, test_labels, BATCH_SIZE)
 
-            print('epoch %d, loss %.4f, eval %.4f, test %.4f, time %.2fmin' %\
-                  (epoch + 1, total_loss / batch_num, eval, accuracy, (time.time() - start) / 60))
+
+            print('epoch %d, loss_train %.4f, loss_eval %.4f, accuracy_eval %.4f, accuracy_test %.4f, time %.2fmin' %\
+                  (epoch + 1, total_loss / (batch_num * BATCH_SIZE), eval, accuracy_eval, accuracy_test, (time.time() - start) / 60))
 
         torch.save(model.state_dict(), SAVE_MODEL_PATH)
     except KeyboardInterrupt:
         # ctrl + c
         print('检测到外部中断,训练结束,模型已自动保存~')
-        path = './bert_model/epoch_' + str(epoch) + '_epochbert_model2.pth'
+        path = './bert_model/epoch_' + str(epoch) + '_epochbert_model.pth'
         torch.save(model.state_dict(), path)
 
 train()
