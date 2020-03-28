@@ -85,9 +85,6 @@ class BertClassifyModel(nn.Module):
 
 
 classes = generate_text_classes(FILE_PATH + 'class.txt')
-train_data, train_labels = generate_data(FILE_PATH + 'train.txt', MAX_SEQ_LENGTH)
-test_data, test_labels = generate_data(FILE_PATH + 'test.txt', MAX_SEQ_LENGTH)
-eval_data, eval_labels = generate_data(FILE_PATH + 'dev.txt', MAX_SEQ_LENGTH)
 
 
 def evaluate(model, eval_data, eval_labels, criterion, batch_size):
@@ -125,6 +122,10 @@ def test(model, test_data, test_labels, batch_size):
 
 
 def train():
+    train_data, train_labels = generate_data(FILE_PATH + 'train.txt', MAX_SEQ_LENGTH)
+    test_data, test_labels = generate_data(FILE_PATH + 'test.txt', MAX_SEQ_LENGTH)
+    eval_data, eval_labels = generate_data(FILE_PATH + 'dev.txt', MAX_SEQ_LENGTH)
+
     config = BertConfig()
     model = BertClassifyModel(config, len(classes), DROPOUT)
     model.to(device)
@@ -168,5 +169,36 @@ def train():
         path = './bert_model/epoch_' + str(epoch) + '_epochbert_model.pth'
         torch.save(model.state_dict(), path)
 
-train()
 
+def predict():
+    # data = input('请输入测试数据:')
+    data = '四川成都发布中小学开学时间表'
+    print(data)
+    tokenized_data = tokenizer.tokenize(data)
+    tokenized_data.insert(0, "[CLS]")
+    tokenized_data.append("[SEP]")
+    data_indexed = tokenizer.convert_tokens_to_ids(tokenized_data)
+    data = torch.from_numpy(np.array(data_indexed)).to(device)
+    data = data.unsqueeze(0) # [1, seq_length]
+
+    config = BertConfig()
+    model = BertClassifyModel(config, len(classes), DROPOUT)
+    model.load_state_dict(torch.load(SAVE_MODEL_PATH))
+    model.to(device)
+    model.eval()
+
+    softmax = nn.Softmax(dim=1)
+
+    print(classes)
+    with torch.no_grad():
+
+        predict = model(data)
+        predict_softmax = softmax(predict)
+        print(predict_softmax)
+        predict = torch.argmax(predict_softmax, dim=1)
+        print(classes[predict.cpu().item()])
+
+
+if __name__ == '__main__':
+    train()
+    # predict()
