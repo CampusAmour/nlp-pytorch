@@ -1,0 +1,204 @@
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
+# Author: CampusAmour
+
+import torch
+import torch.nn as nn
+import time
+import numpy as np
+from transformers import BertTokenizer, BertModel, BertConfig
+from sklearn.metrics import f1_score, accuracy_score
+
+MODEL_PATH = './bert-base-chinese'
+VOCAB_PATH = MODEL_PATH + '/bert-base-chinese-vocab.txt'
+BATCH_SIZE = 32
+EPOCHS = 20
+LEARNING_RATE = 1e-5
+SAVE_MODEL_PATH = './model/bert_chinese_ner_model.pth'
+MAX_SEQ_LENGTH = 128
+DROPOUT = 0.1
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+TRAIN_FILE_PATH = './data/example.train'
+EVAL_FILE_PATH = './data/example.dev'
+TEST_FILE_PATH = './data/example.test'
+tokenizer = BertTokenizer.from_pretrained(VOCAB_PATH)
+
+ner_to_index = {'O': 0, 'B-PER': 1, 'I-PER': 2, 'B-ORG': 3, 'I-ORG': 4, 'B-LOC': 5, 'I-LOC': 6}
+
+
+# def load_data(file_path, max_seq_length=MAX_SEQ_LENGTH):
+#     sentences, targets, targets_length = [], [], []
+#     sentence, target = [], []
+#     with open(file_path, 'r') as f:
+#         for line in f:
+#             line = line.rstrip('\n')
+#             if line == '':
+#                 if len(sentence) <= max_seq_length:
+#                     sentence.insert(0, "[CLS]")
+#                     sentence.append("[SEP]")
+#                     sentence_indexed = tokenizer.convert_tokens_to_ids(sentence)
+#                     data_pad = [tokenizer.pad_token_id] * (max_seq_length + 2)
+#                     seq_length = len(sentence_indexed)
+#                     data_pad[:seq_length] = sentence_indexed[:seq_length]
+#
+#                     target = [ner_to_index[item] for item in target]
+#                     sentences.append(np.array(data_pad))
+#                     targets.append(np.array(target))
+#                     targets_length.append(len(target))
+#
+#                 sentence, target = [], []
+#             else:
+#                 word, label = line.split(' ')
+#                 sentence.append(word)
+#                 target.append(label)
+#
+#     return sentences, targets, targets_length
+
+
+def load_data(file_path, max_seq_length=MAX_SEQ_LENGTH):
+    total_data, data = [], []
+    with open(file_path, 'r') as f:
+        for line in f:
+            line = line.rstrip('\n')
+            if line == '':
+                total_data.append(data)
+                data = []
+            else:
+                data.append(line)
+    total_data = sorted(total_data, key=lambda data: len(data), reverse=True)
+    for i in range(len(total_data)):
+        if len(total_data[i]) <= max_seq_length:
+            break
+    total_data = total_data[i:]
+    sentences, targets, targets_length = [], [], []
+    sentence, target = [], []
+    for data in total_data:
+        for item in data:
+            word, label = item.split(' ')
+            sentence.append(word)
+            target.append(label)
+        sentence.insert(0, "[CLS]")
+        sentence.append("[SEP]")
+        sentence_indexed = tokenizer.convert_tokens_to_ids(sentence)
+        data_pad = [tokenizer.pad_token_id] * (max_seq_length + 2)
+        seq_length = len(sentence_indexed)
+        data_pad[:seq_length] = sentence_indexed[:seq_length]
+
+        target = [ner_to_index[num] for num in target]
+        sentences.append(np.array(data_pad))
+        targets.append(target)
+        targets_length.append(len(target))
+        sentence, target = [], []
+    return sentences, targets, targets_length
+
+
+def generate_batch(sentences, targets, targets_length, batch_size=64):
+    batch_num = len(sentences) // batch_size
+    for k in range(batch_num):
+        begin = k * batch_size
+        end = begin + batch_size
+        sentences_batch = torch.from_numpy(np.array(sentences[begin: end])).to(device)
+        targets_batch = list(targets[begin: end])
+        for i in range(batch_size):
+            targets_batch[i] = np.array(targets_batch[i] + [ner_to_index['O']] * (len(targets_batch[0])-len(targets_batch[i])))
+        targets_batch = torch.from_numpy(np.array(targets_batch)).to(device)
+        targets_length_batch = torch.from_numpy(np.array(targets_length[begin: end])).to(device)
+
+        yield sentences_batch, targets_batch, targets_length_batch
+
+
+class BertNERModel(nn.Module):
+    def __init__(self, config, num_class=7, fc_dropout=0.1):
+        super(BertNERModel, self).__init__()
+        # self.bert = BertModel(config)
+        self.bert = BertModel.from_pretrained(MODEL_PATH)
+        self.fc = nn.Linear(config.hidden_size, num_class)
+        self.dropout = nn.Dropout(fc_dropout)
+
+    def forward(self, x, max_target_length):
+        # bert return: (last_hidden_​​state, pooler_output)
+        hidden_states, _ = self.bert(x)
+        return self.dropout(self.fc(hidden_states[:, 1: max_target_length+1, :]))
+
+
+def evaluate(model, eval_sentences, eval_targets, eval_targets_length, criterion, batch_size):
+    total_loss, total_count = 0., 0
+    batch_num = len(eval_sentences) // BATCH_SIZE
+    batch = generate_batch(eval_sentences, eval_targets, eval_targets_length, batch_size)
+    model.eval()
+    with torch.no_grad():
+        for i in range(batch_num):
+            eval_sentences_batch, eval_targets_batch, eval_targets_length_batch = next(batch)
+
+            predict = model(eval_sentences_batch, eval_targets_length_batch[0])
+
+            predict = predict.view(-1, predict.shape[-1])  # [batch_size, classes]
+
+            loss = criterion(predict, eval_targets_batch.view(-1))
+            total_loss += (loss.cpu().item() * MAX_SEQ_LENGTH * BATCH_SIZE)
+            total_count += (MAX_SEQ_LENGTH * BATCH_SIZE)
+    return total_loss / total_count
+
+
+def test(model, test_sentences, test_targets, test_targets_length, batch_size):
+    # total_f1_score, total_accuracy_score, total_count = 0., 0., 0
+    batch_num = len(test_sentences) // BATCH_SIZE
+    batch = generate_batch(test_sentences, test_targets, test_targets_length, batch_size)
+    model.eval()
+    softmax = nn.Softmax(dim=2)
+    predicts, targets = [], []
+    with torch.no_grad():
+        for i in range(batch_num):
+            test_sentences_batch, test_targets_batch, test_targets_length_batch = next(batch)
+
+            predict = model(test_sentences_batch, test_targets_length_batch[0])
+            predict = torch.argmax(softmax(predict), dim=2)
+
+            predicts.extend(list(predict.view(-1).cpu().numpy()))
+            targets.extend(list(test_targets_batch.view(-1).cpu().numpy()))
+
+    return f1_score(np.array(targets), np.array(predicts), average='macro'),\
+           accuracy_score(np.array(targets), np.array(predicts))
+
+
+def train():
+    config = BertConfig()
+    model = BertNERModel(config)
+    model.to(device)
+    criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    train_sentences, train_targets, train_targets_length = load_data(TRAIN_FILE_PATH)
+    eval_sentences, eval_targets, eval_targets_length = load_data(EVAL_FILE_PATH)
+    test_sentences, test_targets, test_targets_length = load_data(TEST_FILE_PATH)
+    start = time.time()
+    try:
+        for epoch in range(EPOCHS):
+            model.train()
+            total_loss, total_count = 0., 0
+            batch_num = len(train_sentences) // BATCH_SIZE
+            batch = generate_batch(train_sentences, train_targets, train_targets_length, BATCH_SIZE)
+            for i in range(batch_num):
+                train_sentences_batch, train_targets_batch, train_targets_length_batch = next(batch) # labels_batch: [batch_size]
+
+                outputs = model(train_sentences_batch, train_targets_length_batch[0])
+                outputs = outputs.view(-1, outputs.shape[-1])  # [batch_size, class]
+
+                optimizer.zero_grad()
+                loss = criterion(outputs, train_targets_batch.view(-1))
+                total_loss += (loss.cpu().item() * MAX_SEQ_LENGTH * BATCH_SIZE)
+                total_count += (MAX_SEQ_LENGTH * BATCH_SIZE)
+                loss.backward()
+                optimizer.step()
+
+            eval_loss = evaluate(model, eval_sentences, eval_targets, eval_targets_length, criterion, BATCH_SIZE)
+            f1_score_test, accuracy_test = test(model, test_sentences, test_targets, test_targets_length, BATCH_SIZE)
+
+            print('epoch %d, loss_train %.4f, loss_eval %.4f, f1_score_test %.4f, accuracy_test %.4f, time %.2fmin' %\
+                  (epoch+1, total_loss/total_count, eval_loss, f1_score_test, accuracy_test, (time.time()-start)/60))
+    except KeyboardInterrupt:
+        print('检测到外部中断,训练结束,模型已自动保存~')
+        path = './model/epoch_' + str(epoch) + '_bert_chinese_ner_model.pth.pth'
+        torch.save(model.state_dict(), path)
+
+
+train()
