@@ -74,12 +74,13 @@ def generate_batch(sentences, targets, targets_length, batch_size=64):
         end = begin + batch_size
         sentences_batch = torch.from_numpy(np.array(sentences[begin: end])).to(device)
         targets_batch = list(targets[begin: end])
-        for i in range(batch_size):
-            targets_batch[i] = np.array(targets_batch[i] + [tag_to_index['O']] * (len(targets_batch[0])-len(targets_batch[i])))
-        targets_batch = torch.from_numpy(np.array(targets_batch)).to(device)
+        target_words_batch = []
+        for target_seq in targets_batch:
+            target_words_batch.extend(target_seq)
+        target_words_batch = torch.from_numpy(np.array(target_words_batch)).to(device)
         targets_length_batch = torch.from_numpy(np.array(targets_length[begin: end])).to(device)
 
-        yield sentences_batch, targets_batch, targets_length_batch
+        yield sentences_batch, target_words_batch, targets_length_batch
 
 
 def argmax(vec):
@@ -169,12 +170,13 @@ class BertCRFNERModel(nn.Module):
         return score
 
     # @torchsnooper.snoop()
-    def neg_log_likelihood(self, sentences, targets, targets_length):
+    def neg_log_likelihood(self, sentences, target_words, targets_length):
         features = self._get_bert_features(sentences)
         scores = torch.zeros(1).to(device)
+        begin = 0
         for idx, feats in enumerate(features):
             forward_score = self._forward_alg(feats[1: targets_length[idx]+1, :])
-            gold_score = self._score_sentence(feats[1: targets_length[idx]+1, :], targets[idx, :targets_length[idx]])
+            gold_score = self._score_sentence(feats[1: targets_length[idx]+1, :], target_words[begin: begin+targets_length[idx].cpu().item()])
             scores += (forward_score - gold_score)
         return scores
 
@@ -243,11 +245,12 @@ def evaluate(model, eval_sentences, eval_targets, eval_targets_length, batch_siz
     model.eval()
     with torch.no_grad():
         for i in range(batch_num):
-            eval_sentences_batch, eval_targets_batch, eval_targets_length_batch = next(batch)
-            loss = model.neg_log_likelihood(eval_sentences_batch, eval_targets_batch,
+            eval_sentences_batch, eval_target_words_batch, eval_targets_length_batch = next(batch)
+            loss = model.neg_log_likelihood(eval_sentences_batch, eval_target_words_batch,
                                             eval_targets_length_batch)
             total_loss += loss.cpu().item()
-    return total_loss / (batch_num * BATCH_SIZE)
+            total_count += eval_targets_length_batch.sum().cpu().item()
+    return total_loss/total_count
 
 
 def test(model, test_sentences, test_targets, test_targets_length, batch_size):
@@ -257,16 +260,11 @@ def test(model, test_sentences, test_targets, test_targets_length, batch_size):
     total_predicts, total_targets = [], []
     with torch.no_grad():
         for i in range(batch_num):
-            test_sentences_batch, test_targets_batch, test_targets_length_batch = next(batch)
+            test_sentences_batch, test_target_words_batch, test_targets_length_batch = next(batch)
             predicts = model(test_sentences_batch, test_targets_length_batch)
 
             total_predicts.extend(predicts)
-
-            for idx, targets in enumerate(test_targets_batch):
-                total_targets.extend(list(targets[:test_targets_length_batch[idx]].cpu().numpy()))
-
-    print(total_targets)
-    print(total_predicts)
+            total_targets.extend(list(test_target_words_batch.cpu().numpy()))
 
     return f1_score(np.array(total_targets), np.array(total_predicts), average='macro'),\
            accuracy_score(np.array(total_targets), np.array(total_predicts))
@@ -281,28 +279,27 @@ def train():
     eval_sentences, eval_targets, eval_targets_length = load_data(EVAL_FILE_PATH)
     test_sentences, test_targets, test_targets_length = load_data(TEST_FILE_PATH)
 
-    print(len(train_sentences))
-
     start = time.time()
     try:
         for epoch in range(EPOCHS):
             model.train()
-            total_loss = 0.
+            total_loss, total_count = 0., 0
             batch_num = len(train_sentences) // BATCH_SIZE
             batch = generate_batch(train_sentences, train_targets, train_targets_length, BATCH_SIZE)
             for i in tqdm(range(batch_num)):
-                train_sentences_batch, train_targets_batch, train_targets_length_batch = next(batch) # labels_batch: [batch_size]
+                train_sentences_batch, train_target_words_batch, train_targets_length_batch = next(batch) # labels_batch: [batch_size]
                 optimizer.zero_grad()
-                loss = model.neg_log_likelihood(train_sentences_batch, train_targets_batch, train_targets_length_batch)
+                loss = model.neg_log_likelihood(train_sentences_batch, train_target_words_batch, train_targets_length_batch)
                 total_loss += loss.cpu().item()
+                total_count += train_targets_length_batch.sum().cpu().item()
                 loss.backward()
                 optimizer.step()
 
             eval_loss = evaluate(model, eval_sentences, eval_targets, eval_targets_length, BATCH_SIZE)
             f1_score_test, accuracy_test = test(model, test_sentences, test_targets, test_targets_length, BATCH_SIZE)
 
-            print('epoch %d, loss_train %.4f, loss_eval %.4f, f1_score_test %.4f, accuracy_test %.4f, time %.2fmin' %\
-                  (epoch+1, total_loss/(batch_num * BATCH_SIZE), eval_loss, f1_score_test, accuracy_test, (time.time()-start)/60))
+            print('epoch %d, loss_train %.4f, loss_eval %.4f, f1_score_test %.4f, accuracy_test %.4f, time %.2fmin' % \
+                  (epoch+1, total_loss/total_count, eval_loss, f1_score_test, accuracy_test, (time.time()-start)/60))
         torch.save(model.state_dict(), SAVE_MODEL_PATH)
     except KeyboardInterrupt:
         print('检测到外部中断,训练结束,模型已自动保存~')
